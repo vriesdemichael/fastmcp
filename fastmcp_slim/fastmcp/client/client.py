@@ -52,6 +52,7 @@ from mcp.client.session import (
     MessageHandlerFnT,
 )
 from mcp.client.subscriptions import Subscription, listen
+from mcp.shared.subscriptions import ServerEvent, event_to_notification
 from mcp_types.methods import validate_server_result
 from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS
 from pydantic import AnyUrl, ValidationError
@@ -1404,7 +1405,28 @@ class Client(
             prompts_list_changed=prompts_list_changed,
             resources_list_changed=resources_list_changed,
             resource_subscriptions=resource_subscriptions,
+            on_event=(
+                self._evict_for_listen_event
+                if self._response_cache is not None
+                else None
+            ),
         )
+
+    async def _evict_for_listen_event(self, event: ServerEvent) -> None:
+        """Evict the response cache before a listen consumer can refetch.
+
+        `on_event` is awaited before the event is yielded. Without it the
+        iterator wakes first and the refetch in the example above reads a
+        still-warm entry, with no later event to correct it.
+        """
+        cache = self._response_cache
+        assert cache is not None  # installed only when a cache exists
+        try:
+            await cache.evict_for_notification(event_to_notification(event, {}))
+        except Exception:
+            # Eviction reaches user store code; a cache fault must not swallow
+            # the event.
+            logger.exception("Response cache eviction failed; delivering anyway")
 
     async def cancel(
         self,

@@ -32,6 +32,7 @@ from mcp.server.subscriptions import ToolsListChanged
 from mcp.shared.exceptions import MCPError
 from pydantic import FileUrl
 
+import fastmcp.client.client as client_module
 from fastmcp import Client as FastMCPClient
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import PromptError, ResourceError
@@ -383,6 +384,32 @@ async def test_a_fastmcp_client_reaches_the_stream(dual_era_server):
                 event = await anext(aiter(subscription))
 
     assert isinstance(event, ToolsListChanged)
+
+
+@pytest.mark.parametrize("cache, barrier_expected", [(True, True), (False, False)])
+async def test_listen_installs_the_cache_barrier(
+    dual_era_server, monkeypatch, cache, barrier_expected
+):
+    """A cached client passes `on_event`, the SDK's pre-yield eviction seam.
+
+    Asserted structurally rather than by refetching: the notification tee
+    evicts too, so in-process it usually wins the race and a behavioral test
+    passes either way. What must not regress is that the barrier is installed.
+    """
+    captured: dict[str, object] = {}
+    real_listen = client_module.listen
+
+    def spy(session, **kwargs):
+        captured.update(kwargs)
+        return real_listen(session, **kwargs)
+
+    monkeypatch.setattr(client_module, "listen", spy)
+
+    async with FastMCPClient(dual_era_server, mode="auto", cache=cache) as client:
+        async with client.listen(tools_list_changed=True):
+            pass
+
+    assert (captured["on_event"] is not None) is barrier_expected
 
 
 async def test_listen_is_refused_on_legacy(dual_era_server):
